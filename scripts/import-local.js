@@ -1,79 +1,37 @@
 const fs = require("fs");
 const path = require("path");
-const { Client } = require("pg");
-const { buildConnectionString } = require("./db-url");
 
 const ROOT = path.join(__dirname, "..");
+const WORKER_URL = clean(process.env.CODEX_MEMORY_WORKER_URL || "https://codex-memory-cloud.h3318367004.workers.dev").replace(/\/+$/, "");
+const TOKEN = clean(process.env.CODEX_MEMORY_TOKEN || readTokenFile());
 
 async function main() {
+  if (!TOKEN) throw new Error("CODEX_MEMORY_TOKEN is required");
   const memories = [
     ...readRelationshipMemory(),
     ...readJsonl("feel.jsonl", mapFeel),
     ...readJsonl("event_log.jsonl", mapEvent),
   ];
-  const client = new Client({
-    connectionString: buildConnectionString(),
-    ssl: { rejectUnauthorized: false },
-  });
-  await client.connect();
-  try {
-    let saved = 0;
-    for (const memory of memories) {
-      await upsertMemory(client, memory);
-      saved += 1;
-    }
-    process.stdout.write(`Imported ${saved} memory records.\n`);
-  } finally {
-    await client.end();
+  let saved = 0;
+  for (const memory of memories) {
+    await callWorker("remember", memory);
+    saved += 1;
   }
+  process.stdout.write(`Imported ${saved} memory records.\n`);
 }
 
-async function upsertMemory(client, memory) {
-  await client.query({
-    text: `
-      insert into public.codex_memories (
-        external_id,
-        kind,
-        text,
-        summary,
-        source,
-        tags,
-        importance,
-        confidence,
-        sensitivity,
-        emotion_score,
-        pinned,
-        metadata
-      )
-      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-      on conflict (external_id) do update set
-        kind = excluded.kind,
-        text = excluded.text,
-        summary = excluded.summary,
-        source = excluded.source,
-        tags = excluded.tags,
-        importance = excluded.importance,
-        confidence = excluded.confidence,
-        sensitivity = excluded.sensitivity,
-        emotion_score = excluded.emotion_score,
-        pinned = excluded.pinned,
-        metadata = excluded.metadata
-    `,
-    values: [
-      memory.externalId,
-      memory.kind,
-      memory.text,
-      memory.summary,
-      memory.source,
-      memory.tags,
-      numberOrDefault(memory.importance, 0.5),
-      numberOrDefault(memory.confidence, 0.8),
-      memory.sensitivity || "low",
-      memory.emotionScore ?? null,
-      Boolean(memory.pinned),
-      memory.metadata || {},
-    ],
+async function callWorker(tool, body) {
+  const response = await fetch(`${WORKER_URL}/tool/${tool}`, {
+    method: "POST",
+    headers: {
+      "authorization": `Bearer ${TOKEN}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body || {}),
   });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.error || `Worker ${response.status}`);
+  return data;
 }
 
 function readRelationshipMemory() {
@@ -82,7 +40,10 @@ function readRelationshipMemory() {
   const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
   return (Array.isArray(parsed.items) ? parsed.items : []).map((item) => ({
     externalId: `relationship:${item.key}`,
+    canonicalKey: `relationship:${item.key}`,
     kind: inferRelationshipKind(item),
+    layer: inferRelationshipLayer(item),
+    title: item.key,
     text: `${item.key}: ${formatValue(item.value)}`,
     summary: item.key,
     source: item.source || "local relationship_memory.json",
@@ -96,6 +57,7 @@ function readRelationshipMemory() {
       originalUpdatedAt: item.updatedAt,
     },
     pinned: Number(item.importance) >= 0.95,
+    memoryDate: item.updatedAt || item.createdAt,
   }));
 }
 
@@ -112,7 +74,10 @@ function readJsonl(name, mapper) {
 function mapFeel(item) {
   return {
     externalId: `feel:${item.id}`,
+    canonicalKey: `feel:${item.id}`,
+    layer: "feel",
     kind: "feel",
+    title: item.id,
     text: item.text,
     summary: item.summary || null,
     source: item.source || "local feel.jsonl",
@@ -121,13 +86,17 @@ function mapFeel(item) {
     confidence: 0.8,
     emotionScore: item.emotionScore ?? item.emotion_score ?? 0.6,
     metadata: { originalId: item.id, timestamp: item.timestamp, ...(item.metadata || {}) },
+    memoryDate: item.timestamp,
   };
 }
 
 function mapEvent(item) {
   return {
     externalId: `event:${item.id}`,
+    canonicalKey: `event:${item.id}`,
+    layer: "episode",
     kind: "event",
+    title: item.summary || item.id,
     text: item.rawText || item.summary,
     summary: item.summary || null,
     source: item.source || "local event_log.jsonl",
@@ -136,6 +105,7 @@ function mapEvent(item) {
     confidence: 0.8,
     metadata: { originalId: item.id, timestamp: item.timestamp, ...(item.metadata || {}) },
     pinned: Number(item.importance) >= 0.95,
+    memoryDate: item.timestamp,
   };
 }
 
@@ -147,14 +117,29 @@ function inferRelationshipKind(item) {
   return "note";
 }
 
+function inferRelationshipLayer(item) {
+  const tags = new Set((item.tags || []).map((tag) => String(tag).toLowerCase()));
+  if (tags.has("identity")) return "identity";
+  if (tags.has("relationship")) return "relationship";
+  if (tags.has("boundary") || tags.has("style") || tags.has("preference") || tags.has("preferences")) return "core";
+  return "note";
+}
+
 function formatValue(value) {
   if (typeof value === "string") return value;
   return JSON.stringify(value);
 }
 
-function numberOrDefault(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : fallback;
+function readTokenFile() {
+  try {
+    return fs.readFileSync("C:\\Users\\huangyi\\.codex\\codex-memory-token.txt", "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function clean(value) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 main().catch((error) => {
