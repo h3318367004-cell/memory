@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+node_modules/
+*.log
+
+# Local private import sources. Keep them out of GitHub.
+relationship_memory.json
+feel.jsonl
+event_log.jsonl

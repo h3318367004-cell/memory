@@ -1,0 +1,19 @@
+{
+  "name": "codex-memory-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Codex-only cloud memory backed by Supabase Postgres and exposed through a local MCP server.",
+  "main": "src/mcp-server.js",
+  "scripts": {
+    "mcp": "node ./src/mcp-server.js",
+    "db:migrate": "node ./scripts/apply-migration.js",
+    "import:local": "node ./scripts/import-local.js",
+    "check": "node --check ./src/config.js && node --check ./src/supabase.js && node --check ./src/embedding.js && node --check ./src/memory-service.js && node --check ./src/mcp-server.js && node --check ./scripts/import-local.js && node --check ./scripts/apply-migration.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.8",
+    "dotenv": "^16.4.7",
+    "pg": "^8.21.0"
+  }
+}
