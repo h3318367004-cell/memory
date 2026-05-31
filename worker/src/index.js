@@ -129,7 +129,7 @@ async function callTool(name, input, env, request) {
 
 async function wakeup(env, input = {}) {
   const limit = clampInteger(input.limit, 4, 60, 24);
-  const [core, projects, feel, hot, recent, dreamRows] = await Promise.all([
+  const [core, projects, feel, hotRows, recentRows, dreamRows] = await Promise.all([
     selectMemories(env, "layer in ('core','identity','relationship') and status = 'active' and archived_at is null", "locked desc, pinned desc, importance desc, updated_at desc", Math.min(limit, 12)),
     selectMemories(env, "layer = 'project' and status = 'active' and archived_at is null", "pinned desc, importance desc, updated_at desc", 8),
     selectMemories(env, "layer = 'feel' and status = 'active' and archived_at is null", "abs(coalesce(emotion_score, 0)) desc, importance desc, updated_at desc", 6),
@@ -137,6 +137,9 @@ async function wakeup(env, input = {}) {
     selectMemories(env, "status = 'active' and archived_at is null", "coalesce(memory_date, created_at) desc, updated_at desc", Math.min(limit, 10)),
     selectMemories(env, "layer = 'dream' and status = 'active' and archived_at is null", "created_at desc", 4),
   ]);
+  const seen = new Set(uniqueIds([...core, ...projects, ...feel, ...dreamRows]));
+  const hot = takeUnseen(hotRows, seen, Math.min(limit, 10));
+  const recent = takeUnseen(recentRows, seen, Math.min(limit, 10));
   await touch(env, uniqueIds([...core, ...projects, ...feel, ...hot, ...recent, ...dreamRows]));
   return {
     core,
@@ -712,6 +715,17 @@ async function sha256(text) {
 
 function uniqueIds(rows) {
   return [...new Set(rows.map((row) => row.id).filter(Boolean))];
+}
+
+function takeUnseen(rows, seenIds, limit) {
+  const result = [];
+  for (const row of rows) {
+    if (!row.id || seenIds.has(row.id)) continue;
+    seenIds.add(row.id);
+    result.push(row);
+    if (result.length >= limit) break;
+  }
+  return result;
 }
 
 function recencyScore(value) {
