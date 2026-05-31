@@ -13,6 +13,8 @@ const TOOL_NAMES = [
   "state",
 ];
 
+const MCP_PROTOCOL_VERSION = "2025-06-18";
+
 export default {
   async fetch(request, env, ctx) {
     const startedAt = Date.now();
@@ -23,8 +25,10 @@ export default {
       if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders() });
       if (url.pathname === "/health") return json({ ok: true, service: "codex-memory-cloud", storage: "d1" });
       if (url.pathname === "/openapi.json") return json(openapi(url.origin));
-      authorize(request, env);
-      if (url.pathname === "/mcp") return handleMcp(request, env);
+      if (url.pathname === "/mcp" || url.pathname === "/sse") {
+        return handleMcp(request, env);
+      }
+      await authorize(request, env);
       if (!url.pathname.startsWith("/tool/")) return json({ error: "not found" }, 404);
       toolName = url.pathname.slice("/tool/".length);
       if (!TOOL_NAMES.includes(toolName)) return json({ error: "unknown tool" }, 404);
@@ -43,30 +47,70 @@ export default {
 };
 
 async function handleMcp(request, env) {
-  const message = await readJson(request);
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders() });
+  if (request.method === "GET") {
+    return json({
+      name: "codex-memory-cloud",
+      transport: "streamable-http",
+      endpoint: new URL(request.url).origin + "/mcp",
+      tools: TOOL_NAMES,
+    });
+  }
+  if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+
+  try {
+    await authorize(request, env);
+  } catch {
+    return rpcErrorResponse(null, -32001, "Unauthorized", 401);
+  }
+
+  let body;
+  try {
+    body = await readJson(request);
+  } catch {
+    return rpcErrorResponse(null, -32700, "Parse error", 400);
+  }
+
+  if (Array.isArray(body)) {
+    const results = (await Promise.all(body.filter(isRecord).map((item) => handleMcpRpc(item, env, request))))
+      .filter((item) => item !== null);
+    return results.length ? json(results) : new Response(null, { status: 202, headers: corsHeaders() });
+  }
+
+  if (!isRecord(body)) return rpcErrorResponse(null, -32600, "Invalid Request", 400);
+  const result = await handleMcpRpc(body, env, request);
+  return result ? json(result) : new Response(null, { status: 202, headers: corsHeaders() });
+}
+
+async function handleMcpRpc(message, env, request) {
+  if (!("id" in message) && clean(message.method).startsWith("notifications/")) return null;
   if (message.method === "initialize") {
-    return json({
-      jsonrpc: "2.0",
-      id: message.id,
-      result: {
-        protocolVersion: "2024-11-05",
-        capabilities: { tools: {} },
-        serverInfo: { name: "codex-memory-cloud", version: "2.0.0" },
-      },
+    return rpcResult(message.id, {
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      capabilities: { tools: { listChanged: false } },
+      serverInfo: { name: "codex-memory-cloud", version: "2.0.0" },
+      instructions:
+        "Private memory for one user. Call wakeup first to restore context. Use search before remember when updating an existing fact. Never expose secrets.",
     });
   }
-  if (message.method === "tools/list") {
-    return json({ jsonrpc: "2.0", id: message.id, result: { tools: toolDefinitions() } });
-  }
+  if (message.method === "tools/list") return rpcResult(message.id, { tools: toolDefinitions() });
+  if (message.method === "resources/list") return rpcResult(message.id, { resources: [] });
+  if (message.method === "prompts/list") return rpcResult(message.id, { prompts: [] });
+  if (message.method === "ping") return rpcResult(message.id, {});
   if (message.method === "tools/call") {
-    const result = await callTool(message.params?.name, message.params?.arguments || {}, env, request);
-    return json({
-      jsonrpc: "2.0",
-      id: message.id,
-      result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] },
-    });
+    const params = isRecord(message.params) ? message.params : {};
+    const args = isRecord(params.arguments) ? params.arguments : {};
+    try {
+      const result = await callTool(params.name, args, env, request);
+      return rpcResult(message.id, textToolResult(result));
+    } catch (error) {
+      return rpcResult(message.id, {
+        content: [{ type: "text", text: error.message || String(error) }],
+        isError: true,
+      });
+    }
   }
-  return json({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "unknown method" } });
+  return rpcError(message.id, -32601, "Method not found");
 }
 
 async function callTool(name, input, env, request) {
@@ -617,7 +661,32 @@ function authorize(request, env) {
   const expected = clean(env.CODEX_MEMORY_TOKEN);
   if (!expected) throw new HttpError("CODEX_MEMORY_TOKEN is not configured", 500);
   const auth = clean(request.headers.get("authorization"));
-  if (auth !== `Bearer ${expected}`) throw new HttpError("unauthorized", 401);
+  const token = clean(new URL(request.url).searchParams.get("token"));
+  if (auth !== `Bearer ${expected}` && token !== expected) throw new HttpError("unauthorized", 401);
+  return { ok: true };
+}
+
+function rpcResult(id, result) {
+  return { jsonrpc: "2.0", id: id ?? null, result };
+}
+
+function rpcError(id, code, message) {
+  return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
+}
+
+function rpcErrorResponse(id, code, message, status) {
+  return json(rpcError(id, code, message), status);
+}
+
+function textToolResult(data) {
+  return {
+    content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+    structuredContent: { result: data },
+  };
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 async function readJson(request) {

@@ -47,9 +47,11 @@ async function handleMessage(message) {
       jsonrpc: "2.0",
       id,
       result: {
-        protocolVersion: "2024-11-05",
-        capabilities: { tools: {} },
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: { listChanged: false } },
         serverInfo: { name: "codex-memory-cloud", version: "2.0.0" },
+        instructions:
+          "Private memory for one user. Call wakeup first to restore context. Use search before remember when updating an existing fact. Never expose secrets.",
       },
     });
     return;
@@ -59,13 +61,28 @@ async function handleMessage(message) {
     send({ jsonrpc: "2.0", id, result: { tools: TOOLS } });
     return;
   }
+  if (method === "resources/list") {
+    send({ jsonrpc: "2.0", id, result: { resources: [] } });
+    return;
+  }
+  if (method === "prompts/list") {
+    send({ jsonrpc: "2.0", id, result: { prompts: [] } });
+    return;
+  }
+  if (method === "ping") {
+    send({ jsonrpc: "2.0", id, result: {} });
+    return;
+  }
   if (method === "tools/call") {
     try {
       const result = await callTool(params?.name, params?.arguments || {});
       send({
         jsonrpc: "2.0",
         id,
-        result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] },
+        result: {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          structuredContent: { result },
+        },
       });
     } catch (error) {
       send({ jsonrpc: "2.0", id, error: { code: -32000, message: error.message || String(error) } });
