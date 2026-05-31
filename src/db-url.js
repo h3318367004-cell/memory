@@ -20,7 +20,10 @@ function readSecret(file) {
   if (!raw) {
     throw new Error(`database password file is empty: ${file}`);
   }
-  return raw;
+  const postgresLine = raw
+    .split(/\s+/)
+    .find((part) => part.startsWith("postgresql://") || part.startsWith("postgres://"));
+  return postgresLine || raw.split(/\s+/)[0];
 }
 
 function clean(value) {

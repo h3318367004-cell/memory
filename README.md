@@ -1,100 +1,116 @@
 # Codex Memory Cloud
 
-Codex-only private cloud memory.
+Codex-only private memory kernel on Supabase Postgres and Cloudflare Workers.
 
-This project stores Codex memory in Supabase Postgres and exposes it locally through a small MCP server. Claude does not get a tool entry here.
+This is not a chat cache. It is a cloud memory system with durable memory atoms, wakeup context, state, typed links, dream consolidation, archive/supersede semantics, a Cloudflare Worker gateway, and local MCP tools for Codex only.
 
-## Shape
+## Architecture
 
-- Supabase Postgres table: `public.codex_memories`
-- Optional pgvector semantic search: `embedding extensions.vector(1536)`
-- Full text search always works, even without embeddings
-- Local MCP tools only for Codex
-- Local tools connect directly to Postgres, so a Supabase service role key is not required
-- Old local files can be imported once with `npm run import:local`
+- Cloud gateway: Cloudflare Worker
+- Cloud database: Supabase Postgres
+- Vector support: `pgvector` with optional `text-embedding-3-small`
+- Default search: Postgres full text + importance + confidence + recency + heat + pinned/locked boosts
+- Local entry: MCP stdio server calling the Worker when `CODEX_MEMORY_WORKER_URL` is configured
+- Claude entry: none
 
-Memory kinds:
+## Memory Model
 
-- `fact`
-- `event`
-- `feel`
-- `preference`
-- `boundary`
-- `project`
-- `note`
-- `summary`
+Main table: `public.codex_memories`
 
-Each memory has importance, confidence, sensitivity, tags, pin state, archive state, recall heat, optional emotion score, optional supersession, and metadata.
+Layers:
+
+- `core`: durable preferences, boundaries, long-lived relationship facts
+- `identity`: names, selfhood, stable identity facts
+- `relationship`: relationship-state memory
+- `episode`: dated events
+- `feel`: Codex's felt interpretation
+- `project`: project state and open threads
+- `dream`: generated consolidation summaries
+- `working`: temporary working state
+- `note`: uncategorized durable notes
+
+Supporting tables:
+
+- `public.codex_memory_links`: typed relations between memory atoms
+- `public.codex_memory_state`: current state shown during wakeup
+- `public.codex_memory_dreams`: consolidation runs and source memory ids
 
 ## Setup
 
-1. Create or choose a Supabase project.
-2. Apply `supabase/migrations/001_codex_memory_cloud.sql`.
-3. Install dependencies:
-
 ```powershell
 npm install
-```
-
-4. Create `.env` from `.env.example`.
-
-Use `CODEX_MEMORY_DATABASE_URL` or `CODEX_MEMORY_DB_PASSWORD_FILE` for local scripts and the MCP server. The table has RLS enabled and no public policies, so anon clients cannot read private memory.
-
-`OPENAI_API_KEY` is optional. If it is absent, search uses Postgres full text plus memory heat, importance, pinning, and recency.
-
-## Apply Migration
-
-```powershell
 npm run db:migrate
 ```
 
-## Import Old Local Memory
+For local fallback you can use:
+
+```dotenv
+CODEX_MEMORY_DATABASE_URL=postgresql://postgres:your-password@db.yapkbzfwtwzbzqufsgwr.supabase.co:5432/postgres
+```
+
+or:
+
+```dotenv
+CODEX_MEMORY_DB_PASSWORD_FILE=C:\path\to\postgres-password-or-url.txt
+```
+
+## Cloudflare Worker
+
+The Worker is the preferred runtime path. It exposes authenticated HTTPS endpoints under `/tool/*` and talks to Supabase over HTTP.
+
+```powershell
+npm run worker:dry-run
+wrangler login
+wrangler secret put SUPABASE_SERVICE_ROLE_KEY --config ./worker/wrangler.toml
+wrangler secret put CODEX_MEMORY_TOKEN --config ./worker/wrangler.toml
+npm run worker:deploy
+```
+
+After deploy, configure local MCP with:
+
+```dotenv
+CODEX_MEMORY_WORKER_URL=https://codex-memory-cloud.your-subdomain.workers.dev
+CODEX_MEMORY_TOKEN=the-same-token-you-put-in-worker
+```
+
+If those variables are absent, the MCP server falls back to direct Postgres access for local debugging.
+
+## Import Local Memory
 
 ```powershell
 npm run import:local
 ```
 
-The importer reads:
+The importer reads local private source files, which are intentionally ignored by git:
 
 - `relationship_memory.json`
 - `feel.jsonl`
 - `event_log.jsonl`
 
-It uses stable `external_id` values, so rerunning it updates the same cloud rows instead of making duplicates.
-
 ## Codex MCP Config
 
-Point Codex at this server:
+```toml
+[mcp_servers.codex_private_memory]
+args = ['C:\cyberboss-roundtable\codex-memory\src\mcp-server.js']
+command = "node"
+startup_timeout_sec = 30
 
-```json
-{
-  "mcpServers": {
-    "codex_private_memory": {
-      "command": "node",
-      "args": ["C:\\\\cyberboss-roundtable\\\\codex-memory\\\\src\\\\mcp-server.js"],
-      "env": {
-        "CODEX_MEMORY_DATABASE_URL": "postgresql://postgres:your-password@db.yapkbzfwtwzbzqufsgwr.supabase.co:5432/postgres",
-        "OPENAI_API_KEY": "optional"
-      }
-    }
-  }
-}
-```
-
-Or point the server at a local password/connection-string file:
-
-```json
-{
-  "CODEX_MEMORY_DB_PASSWORD_FILE": "C:\\\\Users\\\\huangyi\\\\Desktop\\\\新建文本文档.txt"
-}
+[mcp_servers.codex_private_memory.env]
+CODEX_MEMORY_WORKER_URL = 'https://codex-memory-cloud.your-subdomain.workers.dev'
+CODEX_MEMORY_TOKEN = 'the-same-token-you-put-in-worker'
 ```
 
 ## Tools
 
-- `wakeupCodex`: pinned, important, emotional, and recent context.
-- `searchMemory`: hybrid search with filters.
-- `saveMemory`: create a private memory atom.
-- `updateMemory`: update a memory atom.
-- `pinMemory`: make a memory part of wakeup context.
-- `archiveMemory`: hide stale memory without deleting it.
-- `supersedeMemory`: mark an old memory as replaced by a newer one.
+- `wakeup`: returns grouped wakeup context: state, core, projects, feel, hot, recent, dream
+- `search`: searches cloud memory with layer/kind/tag filters
+- `remember`: saves or upserts a memory atom
+- `revise`: updates an existing memory atom
+- `pin`: pins or unpins a memory
+- `archive`: archives stale memory without deleting it
+- `supersede`: marks one memory as replaced by a newer one
+- `link`: creates a typed relation between two memories
+- `dream`: consolidates memories into a durable dream summary and links the sources
+- `state`: gets, sets, or lists current wakeup state keys
+
+The wakeup tool is named `wakeup`, not `wakeupCodex`.

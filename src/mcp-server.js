@@ -1,36 +1,40 @@
 const readline = require("readline");
 const { createPostgresMemoryService } = require("./postgres-memory-service");
+const { createWorkerMemoryService } = require("./worker-memory-service");
 
-const service = createPostgresMemoryService();
+const service = process.env.CODEX_MEMORY_WORKER_URL
+  ? createWorkerMemoryService()
+  : createPostgresMemoryService();
 
 const TOOLS = [
   {
-    name: "wakeupCodex",
-    description: "Load Codex's private wakeup context: pinned, important, emotional, and recent memories.",
+    name: "wakeup",
+    description: "Load private wakeup context grouped into state, core, projects, feel, hot, recent, and dream memory.",
     inputSchema: {
       type: "object",
       properties: {
-        limit: { type: "number", description: "Maximum memories to return." },
+        limit: { type: "number", description: "Soft maximum memories per wakeup." },
       },
     },
   },
   {
-    name: "searchMemory",
-    description: "Search Codex private cloud memory by text, kind, tags, importance, heat, and optional embeddings.",
+    name: "search",
+    description: "Search private cloud memory by text, layer, kind, tags, heat, importance, and optional embeddings.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Search query. Empty returns high scoring memory." },
         limit: { type: "number", description: "Maximum memories to return." },
+        layers: { type: "array", items: { type: "string" }, description: "Allowed memory layers." },
         kinds: { type: "array", items: { type: "string" }, description: "Allowed memory kinds." },
         tags: { type: "array", items: { type: "string" }, description: "Required overlapping tags." },
-        includeArchived: { type: "boolean", description: "Include archived memories." },
+        includeArchived: { type: "boolean", description: "Include archived or superseded memories." },
       },
     },
   },
   {
-    name: "saveMemory",
-    description: "Save a Codex private memory atom.",
+    name: "remember",
+    description: "Save or upsert a private memory atom. Use canonicalKey for durable unique facts or states.",
     inputSchema: {
       type: "object",
       properties: memoryProperties(),
@@ -38,8 +42,8 @@ const TOOLS = [
     },
   },
   {
-    name: "updateMemory",
-    description: "Update a Codex private memory atom.",
+    name: "revise",
+    description: "Revise an existing private memory atom.",
     inputSchema: {
       type: "object",
       properties: {
@@ -50,8 +54,8 @@ const TOOLS = [
     },
   },
   {
-    name: "pinMemory",
-    description: "Pin or unpin a memory so it appears in wakeup context.",
+    name: "pin",
+    description: "Pin or unpin a memory so it appears strongly in wakeup context.",
     inputSchema: {
       type: "object",
       properties: {
@@ -62,7 +66,7 @@ const TOOLS = [
     },
   },
   {
-    name: "archiveMemory",
+    name: "archive",
     description: "Archive a stale memory without deleting it.",
     inputSchema: {
       type: "object",
@@ -74,8 +78,8 @@ const TOOLS = [
     },
   },
   {
-    name: "supersedeMemory",
-    description: "Mark one memory as superseded by a newer memory.",
+    name: "supersede",
+    description: "Mark one memory as replaced by a newer memory and link them.",
     inputSchema: {
       type: "object",
       properties: {
@@ -86,15 +90,63 @@ const TOOLS = [
       required: ["id", "supersededBy"],
     },
   },
+  {
+    name: "link",
+    description: "Create or update a typed relation between two memory atoms.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        fromMemoryId: { type: "string" },
+        toMemoryId: { type: "string" },
+        relation: { type: "string" },
+        strength: { type: "number" },
+        note: { type: "string" },
+      },
+      required: ["fromMemoryId", "toMemoryId"],
+    },
+  },
+  {
+    name: "dream",
+    description: "Consolidate cloud memory into a durable dream summary and link it to source memories.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", description: "ad_hoc, daily, weekly, monthly, project, or relationship." },
+        limit: { type: "number", description: "How many source memories to consolidate." },
+        instruction: { type: "string", description: "Optional consolidation instruction." },
+        pinned: { type: "boolean" },
+        importance: { type: "number" },
+      },
+    },
+  },
+  {
+    name: "state",
+    description: "Get, set, or list current private memory state keys used during wakeup.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "get", "set"] },
+        key: { type: "string" },
+        value: {},
+        note: { type: "string" },
+      },
+    },
+  },
 ];
 
 function memoryProperties() {
   return {
     externalId: { type: "string" },
+    canonicalKey: { type: "string" },
+    layer: {
+      type: "string",
+      enum: ["core", "identity", "relationship", "episode", "feel", "project", "dream", "working", "note"],
+    },
     kind: {
       type: "string",
       enum: ["fact", "event", "feel", "preference", "boundary", "project", "note", "summary"],
     },
+    title: { type: "string" },
     text: { type: "string" },
     summary: { type: "string" },
     source: { type: "string" },
@@ -104,6 +156,12 @@ function memoryProperties() {
     sensitivity: { type: "string", enum: ["low", "medium", "high"] },
     emotionScore: { type: "number" },
     pinned: { type: "boolean" },
+    locked: { type: "boolean" },
+    status: { type: "string", enum: ["active", "archived", "superseded", "draft"] },
+    memoryDate: { type: "string" },
+    validFrom: { type: "string" },
+    validTo: { type: "string" },
+    expiresAt: { type: "string" },
     metadata: { type: "object" },
   };
 }
@@ -113,13 +171,16 @@ function send(obj) {
 }
 
 async function callTool(name, args = {}) {
-  if (name === "wakeupCodex") return service.wakeup(args);
-  if (name === "searchMemory") return service.searchMemory(args);
-  if (name === "saveMemory") return service.saveMemory(args);
-  if (name === "updateMemory") return service.updateMemory(args);
-  if (name === "pinMemory") return service.pinMemory(args);
-  if (name === "archiveMemory") return service.archiveMemory(args);
-  if (name === "supersedeMemory") return service.supersedeMemory(args);
+  if (name === "wakeup") return service.wakeup(args);
+  if (name === "search") return service.search(args);
+  if (name === "remember") return service.remember(args);
+  if (name === "revise") return service.revise(args);
+  if (name === "pin") return service.pin(args);
+  if (name === "archive") return service.archive(args);
+  if (name === "supersede") return service.supersede(args);
+  if (name === "link") return service.link(args);
+  if (name === "dream") return service.dream(args);
+  if (name === "state") return service.state(args);
   throw new Error(`unknown tool: ${name}`);
 }
 
@@ -132,14 +193,12 @@ async function handleMessage(message) {
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "codex-memory-cloud", version: "0.1.0" },
+        serverInfo: { name: "codex-memory-cloud", version: "1.0.0" },
       },
     });
     return;
   }
-  if (method === "notifications/initialized") {
-    return;
-  }
+  if (method === "notifications/initialized") return;
   if (method === "tools/list") {
     send({ jsonrpc: "2.0", id, result: { tools: TOOLS } });
     return;

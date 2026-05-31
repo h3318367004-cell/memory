@@ -1,0 +1,10 @@
+name = "codex-memory-cloud"
+main = "src/index.js"
+compatibility_date = "2026-05-31"
+
+[vars]
+SUPABASE_URL = "https://yapkbzfwtwzbzqufsgwr.supabase.co"
+
+# Set secrets with:
+# wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+# wrangler secret put CODEX_MEMORY_TOKEN

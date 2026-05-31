@@ -4,18 +4,25 @@ const { Client } = require("pg");
 const { buildConnectionString } = require("./db-url");
 
 async function main() {
-  const sql = fs.readFileSync(path.join(__dirname, "..", "supabase", "migrations", "001_codex_memory_cloud.sql"), "utf8");
+  const migrationDir = path.join(__dirname, "..", "supabase", "migrations");
+  const migrations = fs.readdirSync(migrationDir)
+    .filter((name) => name.endsWith(".sql"))
+    .sort();
   const client = new Client({
     connectionString: buildConnectionString(),
     ssl: { rejectUnauthorized: false },
   });
   await client.connect();
   try {
-    await client.query(sql);
+    for (const name of migrations) {
+      const sql = fs.readFileSync(path.join(migrationDir, name), "utf8");
+      await client.query(sql);
+      process.stdout.write(`Applied ${name}.\n`);
+    }
   } finally {
     await client.end();
   }
-  process.stdout.write("Applied codex memory cloud migration.\n");
+  process.stdout.write("Applied all codex memory migrations.\n");
 }
 
 main().catch((error) => {

@@ -4,6 +4,8 @@ const { createSupabaseMemoryClient } = require("./supabase");
 
 const KINDS = new Set(["fact", "event", "feel", "preference", "boundary", "project", "note", "summary"]);
 const SENSITIVITY = new Set(["low", "medium", "high"]);
+const LAYERS = new Set(["core", "identity", "relationship", "episode", "feel", "project", "dream", "working", "note"]);
+const STATUSES = new Set(["active", "archived", "superseded", "draft"]);
 
 function createMemoryService(options = {}) {
   const config = options.config || readConfig();
@@ -145,7 +147,10 @@ function normalizeMemoryInput(input = {}) {
   if (!text) throw new Error("text is required");
   return {
     external_id: normalizeString(input.externalId || input.external_id) || undefined,
+    canonical_key: normalizeString(input.canonicalKey || input.canonical_key) || undefined,
     kind: normalizeKind(input.kind),
+    layer: normalizeLayer(input.layer, input.kind, input.tags),
+    title: normalizeString(input.title) || normalizeString(input.summary) || null,
     text,
     summary: normalizeString(input.summary) || null,
     source: normalizeString(input.source) || "codex",
@@ -153,10 +158,18 @@ function normalizeMemoryInput(input = {}) {
     importance: clampNumber(input.importance, 0, 1, 0.5),
     confidence: clampNumber(input.confidence, 0, 1, 0.8),
     sensitivity: normalizeSensitivity(input.sensitivity),
-    emotion_score: input.emotionScore === undefined && input.emotion_score === undefined
+    emotion_score: (input.emotionScore === undefined && input.emotion_score === undefined)
+      || input.emotionScore === null
+      || input.emotion_score === null
       ? null
       : clampNumber(input.emotionScore ?? input.emotion_score, -1, 1, 0),
     pinned: Boolean(input.pinned),
+    locked: Boolean(input.locked),
+    status: normalizeStatus(input.status),
+    memory_date: normalizeDate(input.memoryDate || input.memory_date),
+    valid_from: normalizeDate(input.validFrom || input.valid_from),
+    valid_to: normalizeDate(input.validTo || input.valid_to),
+    expires_at: normalizeDate(input.expiresAt || input.expires_at),
     metadata: normalizeObject(input.metadata),
   };
 }
@@ -164,7 +177,10 @@ function normalizeMemoryInput(input = {}) {
 function normalizeMemoryPatch(input = {}) {
   const patch = {};
   if ("externalId" in input || "external_id" in input) patch.external_id = normalizeString(input.externalId || input.external_id) || null;
+  if ("canonicalKey" in input || "canonical_key" in input) patch.canonical_key = normalizeString(input.canonicalKey || input.canonical_key) || null;
   if ("kind" in input) patch.kind = normalizeKind(input.kind);
+  if ("layer" in input) patch.layer = normalizeLayer(input.layer, input.kind, input.tags);
+  if ("title" in input) patch.title = normalizeString(input.title) || null;
   if ("text" in input) patch.text = requireText(input.text);
   if ("summary" in input) patch.summary = normalizeString(input.summary) || null;
   if ("source" in input) patch.source = normalizeString(input.source) || "codex";
@@ -172,8 +188,17 @@ function normalizeMemoryPatch(input = {}) {
   if ("importance" in input) patch.importance = clampNumber(input.importance, 0, 1, 0.5);
   if ("confidence" in input) patch.confidence = clampNumber(input.confidence, 0, 1, 0.8);
   if ("sensitivity" in input) patch.sensitivity = normalizeSensitivity(input.sensitivity);
-  if ("emotionScore" in input || "emotion_score" in input) patch.emotion_score = clampNumber(input.emotionScore ?? input.emotion_score, -1, 1, 0);
+  if ("emotionScore" in input || "emotion_score" in input) {
+    const value = input.emotionScore ?? input.emotion_score;
+    patch.emotion_score = value === null ? null : clampNumber(value, -1, 1, 0);
+  }
   if ("pinned" in input) patch.pinned = Boolean(input.pinned);
+  if ("locked" in input) patch.locked = Boolean(input.locked);
+  if ("status" in input) patch.status = normalizeStatus(input.status);
+  if ("memoryDate" in input || "memory_date" in input) patch.memory_date = normalizeDate(input.memoryDate || input.memory_date);
+  if ("validFrom" in input || "valid_from" in input) patch.valid_from = normalizeDate(input.validFrom || input.valid_from);
+  if ("validTo" in input || "valid_to" in input) patch.valid_to = normalizeDate(input.validTo || input.valid_to);
+  if ("expiresAt" in input || "expires_at" in input) patch.expires_at = normalizeDate(input.expiresAt || input.expires_at);
   if ("metadata" in input) patch.metadata = normalizeObject(input.metadata);
   return patch;
 }
@@ -192,6 +217,33 @@ function normalizeKind(value) {
 function normalizeSensitivity(value) {
   const sensitivity = normalizeString(value).toLowerCase() || "low";
   return SENSITIVITY.has(sensitivity) ? sensitivity : "low";
+}
+
+function normalizeLayer(value, kind = "", tags = []) {
+  const layer = normalizeString(value).toLowerCase();
+  if (LAYERS.has(layer)) return layer;
+  const normalizedKind = normalizeKind(kind);
+  const normalizedTags = normalizeArray(tags).map((tag) => tag.toLowerCase());
+  if (["preference", "boundary"].includes(normalizedKind)) return "core";
+  if (normalizedTags.includes("identity")) return "identity";
+  if (normalizedTags.includes("relationship")) return "relationship";
+  if (normalizedKind === "event") return "episode";
+  if (normalizedKind === "feel") return "feel";
+  if (normalizedKind === "project") return "project";
+  if (normalizedKind === "summary") return "dream";
+  return "note";
+}
+
+function normalizeStatus(value) {
+  const status = normalizeString(value).toLowerCase() || "active";
+  return STATUSES.has(status) ? status : "active";
+}
+
+function normalizeDate(value) {
+  const text = normalizeString(value);
+  if (!text) return null;
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 function normalizeArray(value) {
