@@ -3,6 +3,8 @@
 !.env.example
 node_modules/
 *.log
+worker/.tmp-worker-build/
+.tmp-worker-build/
 
 # Local private import sources. Keep them out of GitHub.
 relationship_memory.json
