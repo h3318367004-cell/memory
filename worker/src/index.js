@@ -275,8 +275,9 @@ function firstLine(text) {
 
 function authorize(request, env) {
   if (!env.CODEX_MEMORY_TOKEN) throw new HttpError("CODEX_MEMORY_TOKEN is not configured", 500);
-  const auth = request.headers.get("authorization") || "";
-  if (auth !== `Bearer ${env.CODEX_MEMORY_TOKEN}`) throw new HttpError("unauthorized", 401);
+  const auth = (request.headers.get("authorization") || "").trim();
+  const token = String(env.CODEX_MEMORY_TOKEN || "").trim();
+  if (auth !== `Bearer ${token}`) throw new HttpError("unauthorized", 401);
 }
 
 async function readJson(request) {
