@@ -330,10 +330,11 @@ async function state(env, input = {}) {
 
 async function deepseekDream(env, rows, input) {
   if (!env.DEEPSEEK_API_KEY) return fallbackDream(rows);
+  const extraInstruction = clean(input.instruction);
   const content = [
-    "整理这些私人记忆，输出一条可长期保存的中文记忆摘要。",
-    "保留稳定事实、关系状态、项目状态、未完成事项；指出过时或冲突的部分；不要输出无关寒暄。",
-    clean(input.instruction) ? `额外要求：${clean(input.instruction)}` : "",
+    "整理这些私人记忆，输出一条可以长期保存的中文记忆摘要。",
+    "保留稳定事实、关系状态、项目状态、未完成事项；指出过时或冲突的部分；不要输出无关寒暄，不要添加来源里没有的新事实。",
+    extraInstruction ? `额外要求：${extraInstruction}` : "",
     "",
     ...rows.map((row, index) => `${index + 1}. [${row.layer}/${row.kind}] ${row.title || row.summary || row.external_id}\n${row.text}`),
   ].filter(Boolean).join("\n");
