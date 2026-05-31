@@ -1,22 +1,79 @@
 const fs = require("fs");
 const path = require("path");
-const { createMemoryService } = require("../src/memory-service");
+const { Client } = require("pg");
+const { buildConnectionString } = require("./db-url");
 
 const ROOT = path.join(__dirname, "..");
 
 async function main() {
-  const service = createMemoryService();
   const memories = [
     ...readRelationshipMemory(),
     ...readJsonl("feel.jsonl", mapFeel),
     ...readJsonl("event_log.jsonl", mapEvent),
   ];
-  let saved = 0;
-  for (const memory of memories) {
-    await service.upsertMemory(memory);
-    saved += 1;
+  const client = new Client({
+    connectionString: buildConnectionString(),
+    ssl: { rejectUnauthorized: false },
+  });
+  await client.connect();
+  try {
+    let saved = 0;
+    for (const memory of memories) {
+      await upsertMemory(client, memory);
+      saved += 1;
+    }
+    process.stdout.write(`Imported ${saved} memory records.\n`);
+  } finally {
+    await client.end();
   }
-  process.stdout.write(`Imported ${saved} memory records.\n`);
+}
+
+async function upsertMemory(client, memory) {
+  await client.query({
+    text: `
+      insert into public.codex_memories (
+        external_id,
+        kind,
+        text,
+        summary,
+        source,
+        tags,
+        importance,
+        confidence,
+        sensitivity,
+        emotion_score,
+        pinned,
+        metadata
+      )
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      on conflict (external_id) do update set
+        kind = excluded.kind,
+        text = excluded.text,
+        summary = excluded.summary,
+        source = excluded.source,
+        tags = excluded.tags,
+        importance = excluded.importance,
+        confidence = excluded.confidence,
+        sensitivity = excluded.sensitivity,
+        emotion_score = excluded.emotion_score,
+        pinned = excluded.pinned,
+        metadata = excluded.metadata
+    `,
+    values: [
+      memory.externalId,
+      memory.kind,
+      memory.text,
+      memory.summary,
+      memory.source,
+      memory.tags,
+      numberOrDefault(memory.importance, 0.5),
+      numberOrDefault(memory.confidence, 0.8),
+      memory.sensitivity || "low",
+      memory.emotionScore ?? null,
+      Boolean(memory.pinned),
+      memory.metadata || {},
+    ],
+  });
 }
 
 function readRelationshipMemory() {
@@ -93,6 +150,11 @@ function inferRelationshipKind(item) {
 function formatValue(value) {
   if (typeof value === "string") return value;
   return JSON.stringify(value);
+}
+
+function numberOrDefault(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }
 
 main().catch((error) => {

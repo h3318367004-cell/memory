@@ -229,4 +229,5 @@ function unwrap(result) {
 module.exports = {
   createMemoryService,
   normalizeMemoryInput,
+  normalizeMemoryPatch,
 };

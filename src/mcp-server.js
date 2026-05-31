@@ -1,7 +1,7 @@
 const readline = require("readline");
-const { createMemoryService } = require("./memory-service");
+const { createPostgresMemoryService } = require("./postgres-memory-service");
 
-const service = createMemoryService();
+const service = createPostgresMemoryService();
 
 const TOOLS = [
   {

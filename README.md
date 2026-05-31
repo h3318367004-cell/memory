@@ -10,6 +10,7 @@ This project stores Codex memory in Supabase Postgres and exposes it locally thr
 - Optional pgvector semantic search: `embedding extensions.vector(1536)`
 - Full text search always works, even without embeddings
 - Local MCP tools only for Codex
+- Local tools connect directly to Postgres, so a Supabase service role key is not required
 - Old local files can be imported once with `npm run import:local`
 
 Memory kinds:
@@ -37,9 +38,15 @@ npm install
 
 4. Create `.env` from `.env.example`.
 
-Use the service role key for the local MCP server. The table has RLS enabled and no public policies, so anon clients cannot read private memory.
+Use `CODEX_MEMORY_DATABASE_URL` or `CODEX_MEMORY_DB_PASSWORD_FILE` for local scripts and the MCP server. The table has RLS enabled and no public policies, so anon clients cannot read private memory.
 
 `OPENAI_API_KEY` is optional. If it is absent, search uses Postgres full text plus memory heat, importance, pinning, and recency.
+
+## Apply Migration
+
+```powershell
+npm run db:migrate
+```
 
 ## Import Old Local Memory
 
@@ -66,12 +73,19 @@ Point Codex at this server:
       "command": "node",
       "args": ["C:\\\\cyberboss-roundtable\\\\codex-memory\\\\src\\\\mcp-server.js"],
       "env": {
-        "CODEX_MEMORY_SUPABASE_URL": "https://your-project-ref.supabase.co",
-        "CODEX_MEMORY_SUPABASE_SERVICE_ROLE_KEY": "your-service-role-key",
+        "CODEX_MEMORY_DATABASE_URL": "postgresql://postgres:your-password@db.yapkbzfwtwzbzqufsgwr.supabase.co:5432/postgres",
         "OPENAI_API_KEY": "optional"
       }
     }
   }
+}
+```
+
+Or point the server at a local password/connection-string file:
+
+```json
+{
+  "CODEX_MEMORY_DB_PASSWORD_FILE": "C:\\\\Users\\\\huangyi\\\\Desktop\\\\新建文本文档.txt"
 }
 ```
 

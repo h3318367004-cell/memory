@@ -20,12 +20,7 @@ create table if not exists public.codex_memories (
   superseded_by uuid references public.codex_memories(id) on delete set null,
   metadata jsonb not null default '{}'::jsonb,
   embedding extensions.vector(1536),
-  search_vector tsvector generated always as (
-    setweight(to_tsvector('simple', coalesce(summary, '')), 'A') ||
-    setweight(to_tsvector('simple', coalesce(text, '')), 'B') ||
-    setweight(to_tsvector('simple', array_to_string(tags, ' ')), 'C') ||
-    setweight(to_tsvector('simple', coalesce(source, '')), 'D')
-  ) stored,
+  search_vector tsvector not null default ''::tsvector,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   last_recalled_at timestamptz,
@@ -54,6 +49,25 @@ drop trigger if exists set_codex_memory_updated_at on public.codex_memories;
 create trigger set_codex_memory_updated_at
 before update on public.codex_memories
 for each row execute function public.set_codex_memory_updated_at();
+
+create or replace function public.set_codex_memory_search_vector()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.search_vector =
+    setweight(to_tsvector('simple', coalesce(new.summary, '')), 'A') ||
+    setweight(to_tsvector('simple', coalesce(new.text, '')), 'B') ||
+    setweight(to_tsvector('simple', array_to_string(new.tags, ' ')), 'C') ||
+    setweight(to_tsvector('simple', coalesce(new.source, '')), 'D');
+  return new;
+end;
+$$;
+
+drop trigger if exists set_codex_memory_search_vector on public.codex_memories;
+create trigger set_codex_memory_search_vector
+before insert or update of text, summary, tags, source on public.codex_memories
+for each row execute function public.set_codex_memory_search_vector();
 
 create or replace function public.codex_memory_touch(memory_id uuid)
 returns void
