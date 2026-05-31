@@ -129,7 +129,6 @@ async function callTool(name, input, env, request) {
 
 async function wakeup(env, input = {}) {
   const limit = clampInteger(input.limit, 4, 60, 24);
-  const stateRows = await env.MEMORY_DB.prepare("select key, value_json, note, updated_at from memory_state order by key").all();
   const [core, projects, feel, hot, recent, dreamRows] = await Promise.all([
     selectMemories(env, "layer in ('core','identity','relationship') and status = 'active' and archived_at is null", "locked desc, pinned desc, importance desc, updated_at desc", Math.min(limit, 12)),
     selectMemories(env, "layer = 'project' and status = 'active' and archived_at is null", "pinned desc, importance desc, updated_at desc", 8),
@@ -140,7 +139,6 @@ async function wakeup(env, input = {}) {
   ]);
   await touch(env, uniqueIds([...core, ...projects, ...feel, ...hot, ...recent, ...dreamRows]));
   return {
-    state: stateRows.results.map(formatState),
     core,
     projects,
     feel,

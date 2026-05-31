@@ -11,7 +11,7 @@ The Worker owns the tools. The local MCP server is only a thin stdio bridge to t
 
 ## Tools
 
-- `wakeup`: grouped wakeup context: state, core, projects, feel, hot, recent, dream
+- `wakeup`: grouped wakeup context: core, projects, feel, hot, recent, dream
 - `search`: lexical + Zhipu vector ranking, with layer/kind/tag filters
 - `remember`: save or upsert a memory atom
 - `revise`: update a memory atom
