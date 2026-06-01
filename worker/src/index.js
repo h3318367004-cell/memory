@@ -23,7 +23,7 @@ export default {
     let ok = false;
     try {
       if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders() });
-      if (url.pathname === "/health") return json({ ok: true, service: "codex-memory-cloud", storage: "d1" });
+      if (url.pathname === "/health") return json({ ok: true, service: "memory-cloud", storage: "d1" });
       if (url.pathname === "/openapi.json") return json(openapi(url.origin));
       if (url.pathname === "/mcp" || url.pathname === "/sse") {
         return handleMcp(request, env);
@@ -44,13 +44,16 @@ export default {
       }
     }
   },
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(autoDream(env, event));
+  },
 };
 
 async function handleMcp(request, env) {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders() });
   if (request.method === "GET") {
     return json({
-      name: "codex-memory-cloud",
+      name: "memory-cloud",
       transport: "streamable-http",
       endpoint: new URL(request.url).origin + "/mcp",
       tools: TOOL_NAMES,
@@ -88,7 +91,7 @@ async function handleMcpRpc(message, env, request) {
     return rpcResult(message.id, {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: "codex-memory-cloud", version: "2.0.0" },
+      serverInfo: { name: "memory-cloud", version: "2.0.0" },
       instructions:
         "Private memory for one user. Call wakeup first to restore context. Use search before remember when updating an existing fact. Never expose secrets.",
     });
@@ -129,7 +132,7 @@ async function callTool(name, input, env, request) {
 
 async function wakeup(env, input = {}) {
   const limit = clampInteger(input.limit, 4, 60, 24);
-  const [core, projects, feel, hotRows, recentRows, dreamRows] = await Promise.all([
+  const [coreRows, projectRows, feelRows, hotRows, recentRows, dreamRowsRaw] = await Promise.all([
     selectMemories(env, "layer in ('core','identity','relationship') and status = 'active' and archived_at is null", "locked desc, pinned desc, importance desc, updated_at desc", Math.min(limit, 12)),
     selectMemories(env, "layer = 'project' and status = 'active' and archived_at is null", "pinned desc, importance desc, updated_at desc", 8),
     selectMemories(env, "layer = 'feel' and status = 'active' and archived_at is null", "abs(coalesce(emotion_score, 0)) desc, importance desc, updated_at desc", 6),
@@ -137,17 +140,17 @@ async function wakeup(env, input = {}) {
     selectMemories(env, "status = 'active' and archived_at is null", "coalesce(memory_date, created_at) desc, updated_at desc", Math.min(limit, 10)),
     selectMemories(env, "layer = 'dream' and status = 'active' and archived_at is null", "created_at desc", 4),
   ]);
-  const seen = new Set(uniqueIds([...core, ...projects, ...feel, ...dreamRows]));
-  const hot = takeUnseen(hotRows, seen, Math.min(limit, 10));
-  const recent = takeUnseen(recentRows, seen, Math.min(limit, 10));
-  await touch(env, uniqueIds([...core, ...projects, ...feel, ...hot, ...recent, ...dreamRows]));
+  const seen = new Set(uniqueIds([...coreRows, ...projectRows, ...feelRows, ...dreamRowsRaw]));
+  const hotRowsSlim = takeUnseen(hotRows, seen, Math.min(limit, 10));
+  const recentRowsSlim = takeUnseen(recentRows, seen, Math.min(limit, 10));
+  await touch(env, uniqueIds([...coreRows, ...projectRows, ...feelRows, ...hotRowsSlim, ...recentRowsSlim, ...dreamRowsRaw]));
   return {
-    core,
-    projects,
-    feel,
-    hot,
-    recent,
-    dream: dreamRows,
+    core: coreRows.map(wakeupMemory),
+    projects: projectRows.map(wakeupMemory),
+    feel: feelRows.map(wakeupMemory),
+    hot: hotRowsSlim.map(wakeupMemory),
+    recent: recentRowsSlim.map(wakeupMemory),
+    dream: dreamRowsRaw.map(wakeupMemory),
   };
 }
 
@@ -214,9 +217,12 @@ async function remember(env, input = {}) {
 }
 
 async function revise(env, input = {}) {
-  const id = requireText(input.id, "id");
+  const id = await resolveMemoryId(env, input);
   const existing = await getMemory(env, id);
   const patch = normalizeMemoryPatch(input);
+  if (!clean(input.id || input.memoryId || input.memory_id) && clean(input.title) && !("newTitle" in input) && !("new_title" in input)) {
+    delete patch.title;
+  }
   if (patch.text || patch.summary || patch.title || patch.tags || patch.kind || patch.layer) {
     patch.embedding = await embed(env, embeddingText({ ...formatMemory(existing), ...patch }));
   }
@@ -273,7 +279,8 @@ async function link(env, input = {}) {
 
 async function dream(env, input = {}) {
   const kind = clean(input.kind) || "ad_hoc";
-  const sourceRows = await search(env, { query: clean(input.query), limit: clampInteger(input.limit, 3, 80, 24), includeArchived: false });
+  const sourceRows = (await search(env, { query: clean(input.query), limit: clampInteger(input.limit, 3, 80, 24), includeArchived: false }))
+    .filter((row) => input.includeDreams === true || row.layer !== "dream");
   if (!sourceRows.length) throw new Error("no source memories available for dream");
   const text = await deepseekDream(env, sourceRows, input);
   const summaryMemory = await remember(env, {
@@ -303,6 +310,31 @@ async function dream(env, input = {}) {
     where id in (${sourceRows.map(() => "?").join(",")})
   `).bind(new Date().toISOString(), ...sourceRows.map((row) => row.id)).run();
   return { summaryMemory, sourceCount: sourceRows.length, sourceIds: sourceRows.map((row) => row.id) };
+}
+
+async function autoDream(env, event) {
+  const latestSource = await env.MEMORY_DB.prepare(`
+    select max(updated_at) as updated_at
+    from memories
+    where status = 'active' and archived_at is null and layer != 'dream'
+  `).first();
+  if (!latestSource?.updated_at) return { skipped: true, reason: "no source memories" };
+  const lastAuto = await env.MEMORY_DB.prepare(`
+    select created_at
+    from dream_runs
+    where kind = 'auto'
+    order by created_at desc
+    limit 1
+  `).first();
+  if (lastAuto?.created_at && Date.parse(lastAuto.created_at) >= Date.parse(latestSource.updated_at)) {
+    return { skipped: true, reason: "no source changes", latest_source_updated_at: latestSource.updated_at };
+  }
+  return dream(env, {
+    kind: "auto",
+    limit: 60,
+    importance: 0.45,
+    instruction: "自动整理。只基于当前已批准且非 dream 的记忆生成低权重摘要；不要改写或覆盖原始记忆；不要添加新事实；重点整理结构关系、冲突、过时风险和后续应优先想起的内容。",
+  });
 }
 
 async function state(env, input = {}) {
@@ -438,6 +470,41 @@ async function getMemory(env, id) {
   return row;
 }
 
+async function resolveMemoryId(env, input = {}) {
+  const directId = clean(input.id || input.memoryId || input.memory_id);
+  if (directId) return directId;
+  const canonicalKey = clean(input.canonicalKey || input.canonical_key);
+  if (canonicalKey) {
+    const row = await env.MEMORY_DB.prepare("select id from memories where canonical_key = ?").bind(canonicalKey).first();
+    if (row?.id) return row.id;
+    throw new Error(`memory not found by canonical_key: ${canonicalKey}`);
+  }
+  const externalId = clean(input.externalId || input.external_id);
+  if (externalId) {
+    const row = await env.MEMORY_DB.prepare("select id from memories where external_id = ?").bind(externalId).first();
+    if (row?.id) return row.id;
+    throw new Error(`memory not found by external_id: ${externalId}`);
+  }
+  const title = clean(input.title);
+  if (title) {
+    const rows = await env.MEMORY_DB.prepare(`
+      select id from memories
+      where title = ? and status = 'active' and archived_at is null
+      order by importance desc, updated_at desc
+      limit 2
+    `).bind(title).all();
+    if (rows.results.length === 1) return rows.results[0].id;
+    if (rows.results.length > 1) throw new Error(`multiple active memories match title: ${title}; pass id`);
+  }
+  const query = clean(input.query);
+  if (query) {
+    const rows = await search(env, { query, limit: 2, includeArchived: false });
+    if (rows.length === 1) return rows[0].id;
+    if (rows.length > 1) throw new Error(`multiple memories match query: ${query}; pass id or exact title`);
+  }
+  throw new Error("revise needs id, canonical_key, external_id, exact title, or query");
+}
+
 async function findExisting(env, memory) {
   if (memory.canonical_key) {
     const row = await env.MEMORY_DB.prepare("select * from memories where canonical_key = ?").bind(memory.canonical_key).first();
@@ -549,7 +616,7 @@ function normalizeMemoryPatch(input = {}) {
   for (const [from, to] of [
     ["externalId", "external_id"], ["external_id", "external_id"],
     ["canonicalKey", "canonical_key"], ["canonical_key", "canonical_key"],
-    ["layer", "layer"], ["kind", "kind"], ["title", "title"], ["text", "text"],
+    ["layer", "layer"], ["kind", "kind"], ["title", "title"], ["newTitle", "title"], ["new_title", "title"], ["text", "text"],
     ["summary", "summary"], ["source", "source"], ["importance", "importance"],
     ["confidence", "confidence"], ["sensitivity", "sensitivity"], ["pinned", "pinned"],
     ["locked", "locked"], ["status", "status"], ["metadata", "metadata"],
@@ -584,6 +651,17 @@ function withoutEmbedding(memory) {
   delete copy.tags_json;
   delete copy.metadata_json;
   return copy;
+}
+
+function wakeupMemory(memory) {
+  return {
+    id: memory.id,
+    title: memory.title,
+    text: memory.text,
+    layer: memory.layer,
+    kind: memory.kind,
+    importance: memory.importance,
+  };
 }
 
 function formatState(row) {
@@ -647,7 +725,7 @@ function openapi(origin) {
   });
   return {
     openapi: "3.1.0",
-    info: { title: "Codex Memory Cloud", version: "2.0.0" },
+    info: { title: "Memory Cloud", version: "2.0.0" },
     servers: [{ url: origin }],
     paths: Object.fromEntries(TOOL_NAMES.map((name) => [`/tool/${name}`, path(name)])),
     components: { securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } } },

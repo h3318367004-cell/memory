@@ -2,6 +2,10 @@ name = "codex-memory-cloud"
 main = "src/index.js"
 compatibility_date = "2026-05-31"
 
+[triggers]
+# 20:20 UTC Sunday = 04:20 Monday Asia/Shanghai. autoDream only writes when source memories changed.
+crons = ["20 20 * * 1"]
+
 [[d1_databases]]
 binding = "MEMORY_DB"
 database_name = "codex-memory"

@@ -1,4 +1,4 @@
-# Codex Memory Cloud
+# Memory Cloud
 
 One memory system, one cloud data source.
 
@@ -11,15 +11,16 @@ The Worker owns the tools. The local MCP server is only a thin stdio bridge to t
 
 ## Tools
 
-- `wakeup`: grouped wakeup context: core, projects, feel, hot, recent, dream. `hot` and `recent` only include memories not already returned in earlier groups.
+- `wakeup`: compact grouped wakeup context: core, projects, feel, hot, recent, dream. Each memory only returns id, title, text, layer, kind, and importance. `hot` and `recent` only include memories not already returned in earlier groups.
 - `search`: lexical + Zhipu vector ranking, with layer/kind/tag filters
 - `remember`: save or upsert a memory atom
-- `revise`: update a memory atom
+- `revise`: update a memory atom by id, canonical_key, external_id, exact title, or query
 - `pin`: boost a memory into wakeup
 - `archive`: hide stale memory without deleting it
 - `supersede`: mark one memory as replaced by another
 - `link`: create typed memory relations
 - `dream`: DeepSeek consolidation into durable dream summaries
+- scheduled `dream`: runs weekly, but only writes when non-dream memories changed since the last automatic run
 - `state`: get/set/list wakeup state
 
 ## Memory Philosophy

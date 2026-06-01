@@ -49,7 +49,7 @@ async function handleMessage(message) {
       result: {
         protocolVersion: "2025-06-18",
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "codex-memory-cloud", version: "2.0.0" },
+        serverInfo: { name: "memory-cloud", version: "2.0.0" },
         instructions:
           "Private memory for one user. Call wakeup first to restore context. Use search before remember when updating an existing fact. Never expose secrets.",
       },
