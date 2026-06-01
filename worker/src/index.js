@@ -156,6 +156,8 @@ async function wakeup(env, input = {}) {
 
 async function search(env, input = {}) {
   const query = clean(input.query);
+  const hasQuery = Boolean(query);
+  const semanticThreshold = clampNumber(input.semanticThreshold ?? input.semantic_threshold, 0, 1, 0.52);
   const layers = normalizeArray(input.layers || input.layer);
   const kinds = normalizeArray(input.kinds || input.kind);
   const tags = normalizeArray(input.tags);
@@ -169,17 +171,23 @@ async function search(env, input = {}) {
     const semantic = queryEmbedding && memory.embedding ? cosine(queryEmbedding, memory.embedding) : 0;
     const heat = Math.log1p(memory.recall_count || 0) / 5;
     const recency = recencyScore(memory.updated_at);
-    const score =
-      lexical * 0.35 +
-      semantic * 0.55 +
-      memory.importance * 0.25 +
-      memory.confidence * 0.1 +
-      recency * 0.1 +
-      heat * 0.15 +
-      (memory.pinned ? 0.5 : 0) +
-      (memory.locked ? 0.35 : 0);
+    const score = hasQuery
+      ? lexical * 3 +
+        semantic * 1.2 +
+        memory.importance * 0.1 +
+        memory.confidence * 0.05 +
+        recency * 0.03 +
+        heat * 0.03 +
+        (memory.pinned ? 0.05 : 0) +
+        (memory.locked ? 0.05 : 0)
+      : memory.importance * 0.35 +
+        memory.confidence * 0.1 +
+        recency * 0.2 +
+        heat * 0.2 +
+        (memory.pinned ? 0.5 : 0) +
+        (memory.locked ? 0.35 : 0);
     return { ...withoutEmbedding(memory), score, lexical_score: lexical, semantic_score: semantic };
-  }).filter((row) => !query || row.lexical_score > 0 || row.semantic_score > 0);
+  }).filter((row) => !hasQuery || row.lexical_score > 0 || row.semantic_score >= semanticThreshold);
   scored.sort((a, b) => b.score - a.score || String(b.updated_at).localeCompare(String(a.updated_at)));
   const result = scored.slice(0, limit);
   await touch(env, result.map((row) => row.id));
@@ -191,8 +199,9 @@ async function remember(env, input = {}) {
   memory.embedding = await embed(env, embeddingText(memory));
   const existing = await findExisting(env, memory);
   if (existing) {
-    await updateMemory(env, existing.id, memory);
-    return withoutEmbedding(formatMemory({ ...existing, ...memory, id: existing.id }));
+    const patch = normalizeRememberUpdate(input, memory, existing);
+    await updateMemory(env, existing.id, patch);
+    return withoutEmbedding(formatMemory({ ...existing, ...patch, id: existing.id }));
   }
   memory.id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -517,6 +526,45 @@ async function findExisting(env, memory) {
   return null;
 }
 
+function normalizeRememberUpdate(input, memory, existing) {
+  const patch = {
+    text: memory.text,
+    embedding: memory.embedding,
+  };
+  for (const [has, key] of [
+    [["externalId", "external_id"], "external_id"],
+    [["canonicalKey", "canonical_key"], "canonical_key"],
+    [["layer"], "layer"],
+    [["kind"], "kind"],
+    [["title"], "title"],
+    [["summary"], "summary"],
+    [["source"], "source"],
+    [["importance"], "importance"],
+    [["confidence"], "confidence"],
+    [["sensitivity"], "sensitivity"],
+    [["emotionScore", "emotion_score"], "emotion_score"],
+    [["memoryDate", "memory_date"], "memory_date"],
+    [["validFrom", "valid_from"], "valid_from"],
+    [["validTo", "valid_to"], "valid_to"],
+    [["expiresAt", "expires_at"], "expires_at"],
+  ]) {
+    if (has.some((field) => field in input)) patch[key] = memory[key];
+  }
+  if ("tags" in input) patch.tags = memory.tags;
+  if ("metadata" in input) patch.metadata = memory.metadata;
+  if ("pinned" in input) patch.pinned = memory.pinned;
+  if ("locked" in input) patch.locked = memory.locked;
+  if ("status" in input) patch.status = memory.status;
+  if ((existing.status !== "active" || existing.archived_at) && !("status" in input)) {
+    patch.status = "active";
+  }
+  if (patch.status === "active") {
+    patch.archived_at = null;
+    patch.superseded_by = null;
+  }
+  return patch;
+}
+
 async function updateMemory(env, id, patch) {
   const fields = normalizePatchColumns(patch);
   if (!fields.length) return;
@@ -561,8 +609,8 @@ async function touch(env, ids) {
   const unique = [...new Set(ids.filter(Boolean))];
   const now = new Date().toISOString();
   await Promise.all(unique.map((id) => env.MEMORY_DB.prepare(
-    "update memories set recall_count = recall_count + 1, last_recalled_at = ?, updated_at = ? where id = ?",
-  ).bind(now, now, id).run()));
+    "update memories set recall_count = recall_count + 1, last_recalled_at = ? where id = ?",
+  ).bind(now, id).run()));
 }
 
 async function audit(env, request, tool, ok, durationMs) {
@@ -669,7 +717,16 @@ function formatState(row) {
 }
 
 function lexicalScore(memory, query) {
-  const haystack = [memory.title, memory.summary, memory.text, memory.source, ...(memory.tags || [])].join(" ").toLowerCase();
+  const haystack = [
+    memory.id,
+    memory.external_id,
+    memory.canonical_key,
+    memory.title,
+    memory.summary,
+    memory.text,
+    memory.source,
+    ...(memory.tags || []),
+  ].join(" ").toLowerCase();
   const terms = clean(query).toLowerCase().split(/\s+/).filter(Boolean);
   if (!terms.length) return 0;
   return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0) / terms.length;
